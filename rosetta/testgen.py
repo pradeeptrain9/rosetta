@@ -184,7 +184,13 @@ def llm_vectors(
             # Some responses are a bare list of input strings.
             stdin, note = item, ""
         elif isinstance(item, dict):
-            stdin, note = str(item.get("stdin", "")), str(item.get("note", ""))
+            # A MISSING stdin key is a malformed entry; an empty string is a
+            # legitimate test input (the empty line). Collapsing the two made
+            # malformed entries look usable, which suppressed the warning below
+            # and then silently vanished in the dedup against boundary probes.
+            if "stdin" not in item:
+                continue
+            stdin, note = str(item["stdin"]), str(item.get("note", ""))
         else:
             continue
         if stdin and not stdin.endswith("\n"):
@@ -252,6 +258,16 @@ def build_suite(
     )
 
     merged: dict[str, TestVector] = {v.stdin: v for v in boundary}
+    before = len(merged)
     for v in extra:
         merged.setdefault(v.stdin, v)
+
+    if extra and len(merged) == before:
+        # Generation produced entries, but every one duplicated a boundary
+        # probe, so the suite did not actually grow. Indistinguishable from
+        # success in the vector count alone.
+        log(
+            f"[warn] all {len(extra)} generated vector(s) duplicated existing "
+            f"boundary probes; suite is still {before} vectors"
+        )
     return list(merged.values())[:target]

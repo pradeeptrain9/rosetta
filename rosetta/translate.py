@@ -115,6 +115,7 @@ def translate(
     model: str,
     prog: CobolProgram,
     contract: IOContract,
+    fallback_model: str | None = None,
 ) -> str:
     fields_desc = (
         "\n    ".join(
@@ -142,5 +143,5 @@ def translate(
                 ),
             },
         ],
-        max_tokens=16384,
+        fallback_model=fallback_model,
     )

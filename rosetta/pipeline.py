@@ -48,7 +48,15 @@ def migrate_program(
     )
 
     try:
-        contract = spec.extract_contract(client, routing.fast, prog)
+        try:
+            contract = spec.extract_contract(client, routing.fast, prog)
+        except (ValueError, RuntimeError) as exc:
+            # Degrade rather than abandon the program: the PIC clauses already
+            # carry enough to probe it, and vector generation still reads the
+            # real source.
+            log(f"[{prog.program_id}] [warn] contract unavailable ({exc}); "
+                f"falling back to static analysis")
+            contract = spec.fallback_contract(prog)
         log(f"[{prog.program_id}] contract: {contract.stdin_lines} stdin line(s), {len(contract.stdin_fields)} field(s)")
 
         vectors: list[TestVector] = testgen.build_suite(
@@ -63,7 +71,9 @@ def migrate_program(
             f"({sum(1 for v in vectors if v.origin == 'boundary')} boundary, "
             f"{sum(1 for v in vectors if v.origin == 'llm')} generated)")
 
-        code = translate_mod.translate(client, routing.reason, prog, contract)
+        code = translate_mod.translate(
+            client, routing.reason, prog, contract, fallback_model=routing.mid
+        )
         log(f"[{prog.program_id}] translated ({len(code.splitlines())} lines of Python)")
 
         diffs = _evaluate(sandbox, prog, code, vectors)
@@ -88,6 +98,7 @@ def migrate_program(
                 len(vectors),
                 iteration,
                 n_failing=len(vectors) - passed,
+                fallback_model=routing.mid,
             )
             cand_diffs = _evaluate(sandbox, prog, candidate, vectors)
             cand_passed = sum(1 for d in cand_diffs if d.equal)

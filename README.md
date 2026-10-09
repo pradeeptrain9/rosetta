@@ -57,6 +57,54 @@ A program is only marked migrated when **every** vector matches. Everything
 else is reported as a failure with the diff attached, because a migration tool
 that hides its failures is worse than no tool.
 
+## Results
+
+A full sweep over the 20-program corpus, every number produced by differential
+execution against the GnuCOBOL-compiled original:
+
+| | |
+|---|---|
+| Programs proven equivalent | **16 / 20 (80%)** |
+| Equivalent on the first translation, no repair | 9 |
+| Equivalent after repair | 7 |
+| Differential test vectors executed | **778** |
+| Vectors matching byte for byte | 757 (97.3%) |
+| Tokens through Token Factory | ~1.2M |
+
+Token split shows why the tiers are separated. The reasoning tier is where the
+cost is, and almost all of it is output:
+
+| Tier | Calls | Prompt | Completion |
+|---|---:|---:|---:|
+| Nemotron 3 Ultra — translation, repair | 48 | 152k | **728k** |
+| Nemotron 3 Nano — contract, test vectors | 50 | 54k | 233k |
+
+`out/report.md` has the per-program table. Run it yourself with
+`rosetta bench benchmarks/programs`.
+
+### What the four failures are
+
+All four are `ACCEPT` handling of **malformed input** — a letter inside a
+numeric field (`12A34`), or a sign fed to an unsigned one (`-1234567.89` into
+`PIC 9(7)V99`). Each of those programs agrees with the original on every
+well-formed input; the disagreements are inputs no production system would send.
+
+They are reported as failures anyway, because that is the point: the harness
+does not get to decide which mismatches are unimportant. Worth noting that
+GnuCOBOL's own behaviour here is not obviously self-consistent — one program
+implies non-digits are stripped (`-1234567.89` is read as 1234567.89) while
+another implies the field reads as zero. Chasing that would tune the translator
+to one compiler build's edge cases and make it worse at the job that matters.
+
+### Reproducibility
+
+Half of each suite is model-generated at temperature 0.7, so vector counts and
+per-program numbers move a little between runs — a program can be 34/34 in one
+run and 32/33 in the next. The suite is a sampler, not a fixed test set. The
+vector count sits next to every result so the strength of each claim is visible,
+and the deterministic boundary probes derived from the PIC clauses are identical
+every run.
+
 ## Why this needs a reasoning model
 
 Naive COBOL translation fails on a small, specific set of semantics, and it

@@ -138,6 +138,7 @@ class LLMClient:
         max_tokens: int = 32768,
         attempts: int = 3,
         retry_messages: list[dict[str, str]] | None = None,
+        fallback_model: str | None = None,
     ) -> str:
         """Chat and return a parseable Python file.
 
@@ -159,7 +160,13 @@ class LLMClient:
             "semantics decision genuinely needs one."
         )
         last: Exception | None = None
-        for i in range(attempts):
+        # The reasoning tier occasionally refuses to stop narrating, burning every
+        # attempt on analysis and never emitting a file. Observed losing a whole
+        # program that way. A different model is the cheapest escape: the tiers
+        # already exist, and a translation from the middle tier that passes the
+        # differential suite is worth incomparably more than a failed program.
+        models = [model] * attempts + ([fallback_model] if fallback_model else [])
+        for i, active in enumerate(models):
             # Retries use the compact prompt when the caller supplied one. A
             # long prompt measurably raises the chance of an essay instead of a
             # file, and by the retry the model has already been given the full
@@ -170,7 +177,11 @@ class LLMClient:
                 # Pick the correction that matches how the last attempt failed.
                 hint = truncated if self.last_finish_reason == "length" else unusable
                 msgs[-1] = {**msgs[-1], "content": msgs[-1]["content"] + hint}
-            text = self.chat(model, msgs, temperature=0.0, max_tokens=max_tokens)
+            try:
+                text = self.chat(active, msgs, temperature=0.0, max_tokens=max_tokens)
+            except RuntimeError as exc:
+                last = exc
+                continue
             try:
                 code = extract_code(text)
             except ValueError as exc:
@@ -184,9 +195,10 @@ class LLMClient:
                 )
                 continue
             return code
-        raise ValueError(
-            f"no parseable Python after {attempts} attempt(s) on {model}: {last}"
-        )
+        tried = f"{attempts} attempt(s) on {model}"
+        if fallback_model:
+            tried += f" and a fallback to {fallback_model}"
+        raise ValueError(f"no parseable Python after {tried}: {last}")
 
     def chat_json(
         self,
@@ -194,9 +206,33 @@ class LLMClient:
         messages: list[dict[str, str]],
         temperature: float = 0.0,
         max_tokens: int = 4096,
+        attempts: int = 3,
     ) -> Any:
-        raw = self.chat(model, messages, temperature=temperature, max_tokens=max_tokens)
-        return parse_json_loose(raw)
+        """Chat and parse JSON, retrying a malformed or truncated response.
+
+        The common failure is truncation: the object starts, the budget runs
+        out, and what arrives is unparseable through no fault of the prompt.
+        Retrying with an explicit "be terse" instruction costs one call and
+        saves the caller from losing its whole unit of work.
+        """
+        terse = (
+            "\n\nYour previous response was not parseable JSON - it was most "
+            "likely cut off. Return ONLY the JSON, minified, with short values. "
+            "No markdown fence, no commentary."
+        )
+        last: Exception | None = None
+        for i in range(attempts):
+            msgs = list(messages)
+            if i:
+                msgs[-1] = {**msgs[-1], "content": msgs[-1]["content"] + terse}
+            try:
+                raw = self.chat(
+                    model, msgs, temperature=temperature, max_tokens=max_tokens
+                )
+                return parse_json_loose(raw)
+            except (ValueError, RuntimeError) as exc:
+                last = exc
+        raise ValueError(f"no parseable JSON after {attempts} attempt(s): {last}")
 
 
 # ---------- output cleaning ----------

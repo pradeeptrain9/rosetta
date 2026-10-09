@@ -1,0 +1,27 @@
+{
+  "program_id": "SIZERR",
+  "path": "benchmarks/programs/sizerr.cbl",
+  "loc": 31,
+  "equivalent": true,
+  "vectors_total": 38,
+  "vectors_passed": 38,
+  "pass_rate": 1.0,
+  "repair_iterations": 0,
+  "token_usage": {
+    "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B": {
+      "prompt": 1657,
+      "completion": 4378,
+      "calls": 2
+    },
+    "nvidia/Nemotron-3-Ultra-550b-a55b": {
+      "prompt": 2091,
+      "completion": 1474,
+      "calls": 1
+    }
+  },
+  "error": null,
+  "diffs": [],
+  "repairs": [],
+  "python": "import sys\nfrom decimal import Decimal, getcontext, ROUND_DOWN\n\n# COBOL fixed-point: use Decimal with wide precision, truncate toward zero on store\ngetcontext().prec = 40\n\n# Field definitions from WORKING-STORAGE\n# All numeric fields are unsigned integers with implied scale 0\n# WS-A: PIC 9(3) -> 3 digits, max 999\n# WS-B: PIC 9(3) -> 3 digits, max 999\n# WS-GUARDED: PIC 9(3) -> 3 digits, initial 777\n# WS-UNGUARDED: PIC 9(3) -> 3 digits, initial 777\n# WS-WIDE: PIC 9(7) -> 7 digits, initial 0\n# WS-FLAG: PIC X(8) -> 8 chars, initial \"OK\"\n\ndef accept_numeric_3digit(line: str) -> int:\n    \"\"\"\n    ACCEPT for PIC 9(3) unsigned.\n    Rule 3b: truncate on RIGHT (keep first 3 chars of line).\n    Rule 3c: take leading numeric prefix of that, empty -> 0.\n    \"\"\"\n    # Strip trailing newline only (already done by caller), take first 3 chars\n    truncated = line[:3]\n    # Take leading digits\n    digits = ''\n    for ch in truncated:\n        if ch.isdigit():\n            digits += ch\n        else:\n            break\n    if not digits:\n        return 0\n    return int(digits)\n\ndef store_pic9_3(value: int) -> int:\n    \"\"\"Store into PIC 9(3): modulo 1000 (discard high-order digits).\"\"\"\n    return value % 1000\n\ndef store_pic9_7(value: int) -> int:\n    \"\"\"Store into PIC 9(7): modulo 10_000_000.\"\"\"\n    return value % 10_000_000\n\ndef display_pic9_3(value: int) -> str:\n    \"\"\"DISPLAY PIC 9(3): zero-padded to exactly 3 digits.\"\"\"\n    return f\"{value:03d}\"\n\ndef display_pic9_7(value: int) -> str:\n    \"\"\"DISPLAY PIC 9(7): zero-padded to exactly 7 digits.\"\"\"\n    return f\"{value:07d}\"\n\ndef display_picx_8(value: str) -> str:\n    \"\"\"DISPLAY PIC X(8): left-justified, space-padded to exactly 8 chars.\"\"\"\n    return value.ljust(8)[:8]\n\ndef main_para():\n    # Initial values\n    ws_a = 0\n    ws_b = 0\n    ws_guarded = 777\n    ws_unguarded = 777\n    ws_wide = 0\n    ws_flag = \"OK\"\n\n    # ACCEPT WS-A\n    line = sys.stdin.readline()\n    if line.endswith('\\n'):\n        line = line[:-1]  # strip trailing newline only\n    ws_a = accept_numeric_3digit(line)\n\n    # ACCEPT WS-B\n    line = sys.stdin.readline()\n    if line.endswith('\\n'):\n        line = line[:-1]\n    ws_b = accept_numeric_3digit(line)\n\n    # COMPUTE WS-GUARDED = WS-A * WS-B ON SIZE ERROR MOVE \"OVERFLOW\" TO WS-FLAG\n    product = ws_a * ws_b\n    if product > 999:  # SIZE ERROR for PIC 9(3)\n        ws_flag = \"OVERFLOW\"\n        # WS-GUARDED remains completely unchanged (keeps 777)\n    else:\n        ws_guarded = product  # fits in 3 digits\n\n    # MULTIPLY WS-A BY WS-B GIVING WS-UNGUARDED (no ON SIZE ERROR)\n    # High-order digits silently discarded\n    ws_unguarded = store_pic9_3(ws_a * ws_b)\n\n    # MULTIPLY WS-A BY WS-B GIVING WS-WIDE (7 digits, no overflow expected but handle anyway)\n    ws_wide = store_pic9_7(ws_a * ws_b)\n\n    # DISPLAY statements - each writes one line\n    # \"GUARDED   \" WS-GUARDED\n    sys.stdout.write(\"GUARDED   \" + display_pic9_3(ws_guarded) + \"\\n\")\n    # \"UNGUARDED \" WS-UNGUARDED\n    sys.stdout.write(\"UNGUARDED \" + display_pic9_3(ws_unguarded) + \"\\n\")\n    # \"WIDE      \" WS-WIDE\n    sys.stdout.write(\"WIDE      \" + display_pic9_7(ws_wide) + \"\\n\")\n    # \"FLAG      \" WS-FLAG\n    sys.stdout.write(\"FLAG      \" + display_picx_8(ws_flag) + \"\\n\")\n\n    # STOP RUN -> exit 0\n    sys.exit(0)\n\nif __name__ == \"__main__\":\n    main_para()\n",
+  "cobol": "      *> The same overflow, with and without ON SIZE ERROR.\n      *> Gotcha: when ON SIZE ERROR is present and fires, the receiving\n      *>         field is left COMPLETELY UNCHANGED - it keeps whatever it\n      *>         held before. Without the clause the high-order digits are\n      *>         silently discarded and the field holds the low-order\n      *>         remainder. Two different wrong answers from one overflow.\n       IDENTIFICATION DIVISION.\n       PROGRAM-ID. SIZERR.\n       DATA DIVISION.\n       WORKING-STORAGE SECTION.\n       01  WS-A                PIC 9(3)     VALUE ZERO.\n       01  WS-B                PIC 9(3)     VALUE ZERO.\n       01  WS-GUARDED          PIC 9(3)     VALUE 777.\n       01  WS-UNGUARDED        PIC 9(3)     VALUE 777.\n       01  WS-WIDE             PIC 9(7)     VALUE ZERO.\n       01  WS-FLAG             PIC X(8)     VALUE \"OK\".\n       PROCEDURE DIVISION.\n       MAIN-PARA.\n           ACCEPT WS-A\n           ACCEPT WS-B\n           COMPUTE WS-GUARDED = WS-A * WS-B\n               ON SIZE ERROR\n                   MOVE \"OVERFLOW\" TO WS-FLAG\n           END-COMPUTE\n           MULTIPLY WS-A BY WS-B GIVING WS-UNGUARDED\n           MULTIPLY WS-A BY WS-B GIVING WS-WIDE\n           DISPLAY \"GUARDED   \" WS-GUARDED\n           DISPLAY \"UNGUARDED \" WS-UNGUARDED\n           DISPLAY \"WIDE      \" WS-WIDE\n           DISPLAY \"FLAG      \" WS-FLAG\n           STOP RUN.\n"
+}

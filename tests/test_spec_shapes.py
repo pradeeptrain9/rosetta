@@ -77,3 +77,21 @@ def test_pic_clause_overrides_the_model_on_width():
         {"stdin_lines": 1, "stdin_fields": [{"order": 0, "name": "WS-CARD", "type": "alpha", "width": 4}]}
     )
     assert contract.stdin_fields[0]["width"] == 16
+
+
+def test_fallback_contract_is_built_from_the_pic_clauses():
+    # A truncated JSON response must not cost the whole program: the ACCEPT
+    # count and PIC clauses are already parsed.
+    prog = analyze(PROGRAMS / "interest.cbl")
+    contract = spec.fallback_contract(prog)
+    assert contract.stdin_lines == prog.accept_count == 3
+    assert len(contract.stdin_fields) == 3
+    assert all(f["digits"] > 0 for f in contract.stdin_fields)
+    assert "static analysis" in contract.notes
+
+
+def test_fallback_contract_handles_a_program_with_no_numeric_fields():
+    prog = analyze(PROGRAMS / "inspectrep.cbl")
+    contract = spec.fallback_contract(prog)
+    assert contract.stdin_lines >= 1
+    assert contract.stdin_fields

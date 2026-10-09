@@ -53,6 +53,41 @@ stdin_lines to the count for a single typical pass and explain in notes.
 """
 
 
+def fallback_contract(prog: CobolProgram) -> IOContract:
+    """Build a contract from the static analysis alone.
+
+    The model's contract is a convenience, not a requirement: the ACCEPT count
+    and the PIC clauses are already parsed, and losing a whole program because a
+    JSON response was truncated is a far worse outcome than probing it with a
+    generic field shape. Vector generation still sees the real source.
+    """
+    numeric = [f for f in prog.fields if f.digits]
+    digits = max((f.digits for f in numeric), default=8)
+    scale = max((f.scale for f in numeric), default=0)
+    signed = any(f.signed for f in numeric)
+    lines = max(prog.accept_count, 1)
+
+    return IOContract(
+        stdin_lines=lines,
+        stdin_fields=[
+            {
+                "order": i,
+                "name": f"ACCEPT-{i + 1}",
+                "type": "numeric",
+                "digits": digits,
+                "scale": scale,
+                "signed": signed,
+                "width": 0,
+                "domain": "inferred from the program's PIC clauses",
+            }
+            for i in range(lines)
+        ],
+        stdout_description=f"{prog.display_count} DISPLAY statement(s)",
+        reads_files=bool(prog.file_selects),
+        notes="contract inferred from static analysis; the model's response was unusable",
+    )
+
+
 def extract_contract(client: LLMClient, model: str, prog: CobolProgram) -> IOContract:
     data = client.chat_json(
         model,
@@ -63,7 +98,7 @@ def extract_contract(client: LLMClient, model: str, prog: CobolProgram) -> IOCon
                 "content": _PROMPT.format(brief=brief(prog), source=prog.source),
             },
         ],
-        max_tokens=3072,
+        max_tokens=8192,
     )
 
     # The model is asked for an object but sometimes returns just the field

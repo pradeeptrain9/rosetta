@@ -83,3 +83,37 @@ def test_recognised_shape_does_not_warn():
     )
     assert len(vectors) == 1
     assert not seen
+
+
+def test_entry_without_a_stdin_key_is_dropped_and_reported():
+    # Observed live: entries lacking "stdin" became "" (a valid boundary probe),
+    # so they counted as usable, silenced the warning, and then collapsed to one
+    # vector in the dedup.
+    seen: list[str] = []
+    vectors = llm_vectors(
+        FakeClient([{"note": "no stdin key"}, {"note": "nor here"}]),
+        "m", "SRC", CONTRACT, n=2, log=seen.append,
+    )
+    assert vectors == []
+    assert any("warn" in m for m in seen)
+
+
+def test_an_explicitly_empty_stdin_is_kept():
+    # The empty line is a real input COBOL treats as zero.
+    vectors = llm_vectors(FakeClient([{"stdin": ""}]), "m", "SRC", CONTRACT, n=1)
+    assert len(vectors) == 1
+    assert vectors[0].stdin == ""
+
+
+def test_generation_that_only_duplicates_boundary_probes_is_reported():
+    from rosetta.testgen import boundary_vectors, build_suite
+
+    probes = boundary_vectors(CONTRACT, cap=20)
+    dupes = [{"stdin": v.stdin} for v in probes]
+
+    seen: list[str] = []
+    suite = build_suite(
+        FakeClient(dupes), "m", "SRC", CONTRACT, target=40, log=seen.append
+    )
+    assert len(suite) == len(probes)
+    assert any("duplicated" in m for m in seen), "a suite that did not grow must say so"
