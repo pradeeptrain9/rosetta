@@ -1,0 +1,39 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  unit:
+    # The unit suite covers static analysis, PIC expansion, vector generation
+    # and diff classification. None of it needs an API key or a GPU, so it runs
+    # on every push; the differential harness needs Docker and a Nebius key and
+    # is exercised by `rosetta bench` locally.
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.10", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: pip install -e ".[dev]"
+      - run: pytest tests -q
+
+  cobol-compiles:
+    # The benchmark corpus is the oracle. If GnuCOBOL cannot compile it, every
+    # equivalence claim in the report is meaningless, so this is a gate.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y gnucobol4 || sudo apt-get install -y gnucobol3
+      - name: Compile every benchmark program
+        run: |
+          set -euo pipefail
+          for f in benchmarks/programs/*.cbl; do
+            echo "== $f"
+            cobc -x -o "/tmp/$(basename "$f" .cbl)" "$f"
+          done

@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+.env
+.rosetta/
+out/
+dist/
+build/
+*.egg-info/
+.DS_Store
+.pytest_cache/
+.ruff_cache/
