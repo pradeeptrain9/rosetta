@@ -231,6 +231,31 @@ truncation they exist to demonstrate never happened.
 
 Point `rosetta bench` at any directory of `.cbl` / `.cob` files to run your own.
 
+## Hosted demo
+
+`demo/` is a Hugging Face Space (Docker SDK). It serves the equivalence results
+for all 20 programs — original COBOL, migrated Python, and every failing vector
+with its diff — and, when `NEBIUS_API_KEY` is set as a Space secret, re-runs the
+pipeline live for one program.
+
+```bash
+rosetta bench benchmarks/programs      # produce out/
+python3 demo/precompute.py out demo/precomputed
+# then push demo/ (plus rosetta/ and benchmarks/) to a Space with sdk: docker
+```
+
+Results are **pre-computed into the image** so the page renders instantly and
+still works when the key is throttled. Two deliberate constraints:
+
+- The demo only migrates the fixed corpus, never pasted source. Checking a port
+  means *executing* model-generated Python, and in a Space that shares a
+  container with the web server; the CLI isolates each run in a network-less
+  container instead, which is what makes arbitrary input safe there.
+- `demo/Dockerfile` installs GnuCOBOL itself rather than building `FROM` the
+  sandbox image, because a Space is built on Hugging Face's infrastructure where
+  a local image cannot be pulled. Keep its apt block in step with the root
+  `Dockerfile`.
+
 ## Honest limitations
 
 - **Batch programs with stdin/stdout only.** `CALL`, `EXEC SQL`, `EXEC CICS`,

@@ -177,17 +177,61 @@ def llm_vectors(
         log(f"[warn] generated vectors unavailable, boundary probes only: {exc}")
         return []
 
+    items = _as_vector_list(data)
     out: list[TestVector] = []
-    if not isinstance(data, list):
-        data = data.get("vectors", []) if isinstance(data, dict) else []
-    for item in data:
-        if not isinstance(item, dict):
+    for item in items:
+        if isinstance(item, str):
+            # Some responses are a bare list of input strings.
+            stdin, note = item, ""
+        elif isinstance(item, dict):
+            stdin, note = str(item.get("stdin", "")), str(item.get("note", ""))
+        else:
             continue
-        stdin = str(item.get("stdin", ""))
         if stdin and not stdin.endswith("\n"):
             stdin += "\n"
-        out.append(TestVector.make(stdin, "llm", str(item.get("note", ""))))
+        out.append(TestVector.make(stdin, "llm", note))
+
+    if not out:
+        # The call succeeded but yielded nothing usable. Silence here is how a
+        # suite quietly shrinks to boundary probes only, and a thin suite proves
+        # equivalence over far less than it appears to.
+        log(
+            "[warn] test-vector response had no usable entries "
+            f"(top level was {type(data).__name__}); boundary probes only"
+        )
     return out
+
+
+def _as_vector_list(data: object) -> list:
+    """Find the list of vectors in whatever shape came back.
+
+    Asked for a JSON array, the model variously returns the array, an object
+    wrapping it under some key of its choosing, or an object keyed by index.
+    Hunting for the list is far cheaper than another round trip.
+    """
+    if isinstance(data, list):
+        return data
+    if not isinstance(data, dict):
+        return []
+
+    for key in ("vectors", "test_inputs", "inputs", "cases", "tests", "data"):
+        val = data.get(key)
+        if isinstance(val, list):
+            return val
+
+    # Any list-of-entries value will do, whatever it is called.
+    for val in data.values():
+        if isinstance(val, list) and val and isinstance(val[0], (dict, str)):
+            return val
+
+    # An object keyed by index, e.g. {"1": {...}, "2": {...}}.
+    if data and all(isinstance(v, dict) for v in data.values()):
+        return list(data.values())
+
+    # A single vector returned unwrapped.
+    if "stdin" in data:
+        return [data]
+    return []
 
 
 def build_suite(

@@ -66,7 +66,19 @@ def extract_contract(client: LLMClient, model: str, prog: CobolProgram) -> IOCon
         max_tokens=3072,
     )
 
+    # The model is asked for an object but sometimes returns just the field
+    # array, or a single-element list wrapping the object. Normalising here is
+    # cheaper than a retry, and an unusable shape must not crash the program's
+    # whole migration.
+    if isinstance(data, list):
+        wrapper = next((x for x in data if isinstance(x, dict) and "stdin_fields" in x), None)
+        data = wrapper if wrapper is not None else {"stdin_fields": data}
+    if not isinstance(data, dict):
+        data = {}
+
     fields = data.get("stdin_fields") or []
+    if not isinstance(fields, list):
+        fields = []
     # Normalise and backfill from the PIC clauses we parsed ourselves.
     by_name = {f.name: f for f in prog.fields}
     clean: list[dict] = []
