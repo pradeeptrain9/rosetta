@@ -11,7 +11,20 @@ from pathlib import Path
 STATE_DIR = Path(os.environ.get("ROSETTA_STATE_DIR", ".rosetta"))
 MODEL_CACHE = STATE_DIR / "models.json"
 
-DEFAULT_BASE_URL = "https://api.studio.nebius.com/v1"
+DEFAULT_BASE_URL = "https://api.tokenfactory.nebius.com/v1"
+
+# Token Factory fine-tunes no Nemotron model, so the distillation student is
+# picked from the fine-tunable catalog instead. This is a FIXED id rather than
+# something discovered from the served list: being served and being fine-tunable
+# are different properties, and discovery would happily return a Nemotron that
+# the fine-tuning API then rejects.
+FINE_TUNABLE_STUDENTS = (
+    "meta-llama/Llama-3.1-8B-Instruct",
+    "meta-llama/Llama-3.3-70B-Instruct",
+    "Qwen/Qwen3-30B-A3B",
+    "unsloth/gpt-oss-20b-BF16",
+)
+DEFAULT_STUDENT = FINE_TUNABLE_STUDENTS[0]
 
 # Tier -> ordered regex preferences used to pick a served model id.
 # Highest-priority pattern that matches a served id wins. Nemotron 3 names are
@@ -44,14 +57,17 @@ TIER_PATTERNS: dict[str, list[str]] = {
 class ModelRouting:
     """Which Nemotron tier handles which job.
 
-    reason -> translation + repair (needs real reasoning)
-    fast   -> spec extraction + test-vector generation (high volume, cheap)
-    mid    -> optional middle tier, used by the distillation comparison
+    reason  -> translation + repair (needs real reasoning)
+    fast    -> spec extraction + test-vector generation (high volume, cheap)
+    mid     -> optional middle tier, used by the distillation comparison
+    student -> fine-tuning target for distilled repair. Not a Nemotron: see
+               FINE_TUNABLE_STUDENTS.
     """
 
     reason: str
     fast: str
     mid: str
+    student: str = DEFAULT_STUDENT
 
     def as_dict(self) -> dict[str, str]:
         return asdict(self)
@@ -145,6 +161,13 @@ def resolve_models(served: list[str] | None = None, refresh: bool = False) -> Mo
             + ". Run `rosetta models --resolve` to discover served ids, or pin them "
             "via ROSETTA_MODEL_REASON / ROSETTA_MODEL_FAST / ROSETTA_MODEL_MID."
         )
+
+    # The student is configured, never discovered.
+    resolved["student"] = (
+        os.environ.get("ROSETTA_MODEL_STUDENT", "").strip()
+        or (cached.get("student") if not refresh else "")
+        or DEFAULT_STUDENT
+    )
 
     routing = ModelRouting(**resolved)
     if served or refresh:

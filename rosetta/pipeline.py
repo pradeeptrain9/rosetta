@@ -52,7 +52,12 @@ def migrate_program(
         log(f"[{prog.program_id}] contract: {contract.stdin_lines} stdin line(s), {len(contract.stdin_fields)} field(s)")
 
         vectors: list[TestVector] = testgen.build_suite(
-            client, routing.fast, prog.source, contract, target=settings.test_vectors
+            client,
+            routing.fast,
+            prog.source,
+            contract,
+            target=settings.test_vectors,
+            log=log,
         )
         log(f"[{prog.program_id}] {len(vectors)} test vectors "
             f"({sum(1 for v in vectors if v.origin == 'boundary')} boundary, "
@@ -75,7 +80,14 @@ def migrate_program(
             log(f"[{prog.program_id}] repair {iteration}: {len(vectors) - passed} failing ({kinds})")
 
             candidate, attempt = repair(
-                client, routing.reason, prog, code, failures, len(vectors), iteration
+                client,
+                routing.reason,
+                prog,
+                code,
+                failures,
+                len(vectors),
+                iteration,
+                n_failing=len(vectors) - passed,
             )
             cand_diffs = _evaluate(sandbox, prog, candidate, vectors)
             cand_passed = sum(1 for d in cand_diffs if d.equal)

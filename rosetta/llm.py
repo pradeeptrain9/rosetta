@@ -8,6 +8,7 @@ and retry with jitter.
 
 from __future__ import annotations
 
+import ast
 import json
 import random
 import re
@@ -58,6 +59,9 @@ class LLMClient:
             )
         self.settings = settings
         self.ledger = ledger or TokenLedger()
+        # Set on every completed call. "length" means the response was cut off,
+        # which for a code request yields an unusable half-file.
+        self.last_finish_reason: str | None = None
         self._client = OpenAI(
             api_key=settings.api_key,
             base_url=settings.base_url,
@@ -96,8 +100,27 @@ class LLMClient:
                         usage.prompt_tokens or 0,
                         usage.completion_tokens or 0,
                     )
-                content = resp.choices[0].message.content or ""
-                return _strip_reasoning(content)
+                choice = resp.choices[0]
+                self.last_finish_reason = getattr(choice, "finish_reason", None)
+                content = _strip_reasoning(choice.message.content or "")
+                if not content:
+                    # An empty completion is never a usable answer, and silently
+                    # returning "" makes every caller downstream interpret a
+                    # failed call as a model that had nothing to say. Seen in
+                    # practice when a reasoning tier spends its whole budget
+                    # before emitting any answer, so surface the finish reason.
+                    last_err = RuntimeError(
+                        f"empty completion (finish_reason="
+                        f"{getattr(choice, 'finish_reason', '?')}, "
+                        f"completion_tokens="
+                        f"{getattr(resp.usage, 'completion_tokens', '?')}); "
+                        f"max_tokens={max_tokens} may be too low"
+                    )
+                    if i < attempts - 1:
+                        time.sleep(min(2 ** i, 8) + random.uniform(0, 0.75))
+                        continue
+                    raise last_err
+                return content
             except (RateLimitError, APIConnectionError) as exc:
                 last_err = exc
             except APIStatusError as exc:
@@ -107,6 +130,63 @@ class LLMClient:
             sleep = min(2 ** i, 8) + random.uniform(0, 0.75)
             time.sleep(sleep)
         raise RuntimeError(f"Nebius call to {model} failed after {attempts} attempts: {last_err}")
+
+    def chat_code(
+        self,
+        model: str,
+        messages: list[dict[str, str]],
+        max_tokens: int = 32768,
+        attempts: int = 3,
+        retry_messages: list[dict[str, str]] | None = None,
+    ) -> str:
+        """Chat and return a parseable Python file.
+
+        A response with no usable code is recoverable: telling the model plainly
+        that its last answer was unusable almost always fixes it, and that is far
+        cheaper than letting a broken file through and spending three repair
+        iterations discovering it fails every vector.
+        """
+        unusable = (
+            "\n\nYour previous response did not contain a parseable Python file. "
+            "Return ONLY the complete Python file, in a single ```python fenced "
+            "block. Do not restate the COBOL. Do not explain."
+        )
+        truncated = (
+            "\n\nYour previous response was CUT OFF before it finished. Do not "
+            "write any analysis, preamble or commentary - that is what exhausted "
+            "the budget. Start your reply with ```python on the very first line "
+            "and emit only the file. Keep comments to the few lines where a "
+            "semantics decision genuinely needs one."
+        )
+        last: Exception | None = None
+        for i in range(attempts):
+            # Retries use the compact prompt when the caller supplied one. A
+            # long prompt measurably raises the chance of an essay instead of a
+            # file, and by the retry the model has already been given the full
+            # briefing once - what it needs now is less to read, not more.
+            base = (retry_messages or messages) if i else messages
+            msgs = list(base)
+            if i:
+                # Pick the correction that matches how the last attempt failed.
+                hint = truncated if self.last_finish_reason == "length" else unusable
+                msgs[-1] = {**msgs[-1], "content": msgs[-1]["content"] + hint}
+            text = self.chat(model, msgs, temperature=0.0, max_tokens=max_tokens)
+            try:
+                code = extract_code(text)
+            except ValueError as exc:
+                last = exc
+                continue
+            if self.last_finish_reason == "length":
+                # Parsed, but the response was still cut off: a truncated file
+                # that happens to parse is a trap - it silently omits behaviour.
+                last = ValueError(
+                    "response hit the token limit; the file is incomplete"
+                )
+                continue
+            return code
+        raise ValueError(
+            f"no parseable Python after {attempts} attempt(s) on {model}: {last}"
+        )
 
     def chat_json(
         self,
@@ -122,7 +202,12 @@ class LLMClient:
 # ---------- output cleaning ----------
 
 _THINK_RX = re.compile(r"<think>.*?</think>\s*", re.S | re.I)
-_FENCE_RX = re.compile(r"```[a-zA-Z0-9_+-]*\s*\n(.*?)```", re.S)
+# Captures the language tag as well as the body: picking a block by size alone
+# hands back the COBOL whenever the model echoes the source.
+_FENCE_RX = re.compile(r"```([a-zA-Z0-9_+-]*)\s*\n(.*?)```", re.S)
+_PY_TAGS = {"python", "py", "python3"}
+# Truncation usually leaves an opening fence with no closing one.
+_OPEN_FENCE_RX = re.compile(r"```([a-zA-Z0-9_+-]*)\s*\n(.*)\Z", re.S)
 
 
 def _strip_reasoning(text: str) -> str:
@@ -139,17 +224,64 @@ def _strip_reasoning(text: str) -> str:
     return cleaned.strip()
 
 
-def extract_code(text: str, language_hint: str = "python") -> str:
-    """Pull the largest fenced code block, or fall back to the raw text."""
-    blocks = _FENCE_RX.findall(text)
-    if blocks:
-        return max(blocks, key=len).strip() + "\n"
-    return text.strip() + "\n"
+def extract_code(text: str) -> str:
+    """Return the largest fenced block that actually parses as Python.
+
+    Two failure modes made a naive "largest block" wrong in practice. The model
+    sometimes echoes the COBOL source back in a fence, and that block can be the
+    largest one in the response; and a response can be mostly prose with only a
+    fragment of code. Requiring the result to parse rejects both: COBOL is not
+    valid Python, and neither is half a function.
+
+    Raises ValueError when nothing in the response is parseable Python, which is
+    a hard failure worth surfacing rather than writing a broken file to disk and
+    burning repair iterations on it.
+    """
+    blocks = [(lang.lower(), body) for lang, body in _FENCE_RX.findall(text)]
+
+    tagged = [b for lang, b in blocks if lang in _PY_TAGS]
+    untagged = [b for lang, b in blocks if not lang]
+    other = [b for lang, b in blocks if lang and lang not in _PY_TAGS]
+
+    # Explicitly tagged python first, then untagged, then anything else; within
+    # each group prefer the longest, which is the complete file over a snippet.
+    candidates = (
+        sorted(tagged, key=len, reverse=True)
+        + sorted(untagged, key=len, reverse=True)
+        + sorted(other, key=len, reverse=True)
+    )
+
+    # Recover a truncated response: an opening fence with nothing closing it.
+    # It parses only if the cut happened to land on a statement boundary, but
+    # when it does the file is usable and the alternative is discarding it.
+    if not blocks:
+        open_m = _OPEN_FENCE_RX.search(text)
+        if open_m:
+            candidates.append(open_m.group(2))
+
+    candidates.append(text)
+
+    for cand in candidates:
+        cleaned = cand.strip()
+        if not cleaned:
+            continue
+        cleaned += "\n"
+        try:
+            ast.parse(cleaned)
+        except (SyntaxError, ValueError):
+            continue
+        return cleaned
+
+    raise ValueError(
+        f"no parseable Python in the response ({len(blocks)} fenced block(s), "
+        f"tags={[lang for lang, _ in blocks]}); first 300 chars: {text[:300]!r}"
+    )
 
 
 def parse_json_loose(text: str) -> Any:
     """Parse JSON that may be fenced or surrounded by prose."""
-    candidates: Iterable[str] = [*_FENCE_RX.findall(text), text]
+    candidates: Iterable[str] = [body for _lang, body in _FENCE_RX.findall(text)]
+    candidates = [*candidates, text]
     for cand in candidates:
         cand = cand.strip()
         try:

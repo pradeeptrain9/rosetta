@@ -87,28 +87,40 @@ whichever tier does the repetitive work:
 | **reason** (Nemotron 3 Ultra) | translation, repair diagnosis | needs to track fixed-point scale through expressions and diagnose a diff's root cause |
 | **fast** (Nemotron 3 Nano) | I/O contract extraction, test-vector generation | high call volume, structured output, no deep reasoning required |
 | **mid** (Nemotron 3 Super) | distillation comparison baseline | measures what is lost by dropping a tier |
+| **student** (Llama 3.1 8B) | distilled repair, fine-tuned | the only tier that is *not* a Nemotron, because Token Factory fine-tunes none of them |
 
-Model ids are **discovered, not hard-coded**. `rosetta models --resolve` reads
-`GET /v1/models` from Token Factory and picks each tier by matching the served
-ids, caching the result. Pin them explicitly with `ROSETTA_MODEL_REASON`,
+The three Nemotron tiers are **discovered, not hard-coded**. `rosetta models
+--resolve` reads `GET /v1/models` from Token Factory and picks each tier by
+matching the served ids, caching the result — so the project keeps working as
+ids rotate. Pin them explicitly with `ROSETTA_MODEL_REASON`,
 `ROSETTA_MODEL_FAST` and `ROSETTA_MODEL_MID` if you prefer.
+
+The student is the exception: it is a fixed id from `ROSETTA_MODEL_STUDENT`,
+because being *served* and being *fine-tunable* are different properties and
+discovery would happily hand back a model the fine-tuning API then rejects.
 
 ## Where Token Factory does the heavy lifting
 
 1. **Serving the three tiers behind one OpenAI-compatible endpoint.** Tier
    routing is a string swap, so measuring "what if the fast tier did this job"
    costs one config change rather than a rewrite.
-2. **Serverless Jobs for the differential sweep.** Verification, not inference,
-   is the expensive stage: every program runs its whole vector suite twice per
-   repair iteration. `jobs/nebius_job.yaml` fans the benchmark out across
-   replicas with a stride partition; `jobs/merge_shards.py` reassembles one
-   report.
+2. **Serverless AI Jobs for the differential sweep.** Verification, not
+   inference, is the expensive stage: every program runs its whole vector suite
+   twice per repair iteration. Serverless AI jobs have no replica flag — one job
+   is one container run — so `jobs/submit_sweep.sh N` submits N independent jobs,
+   each told which slice of the corpus it owns via `ROSETTA_SHARD_INDEX` and
+   `ROSETTA_SHARD_COUNT`. `jobs/run_shard.py` stride-partitions on those, which
+   keeps shards balanced with no coordinator, and `jobs/merge_shards.py`
+   reassembles one report. The replicas are plain CPU workers: the GPU work all
+   happens inside Token Factory.
 3. **Fine-tuning for distillation.** Every accepted repair is a labelled
    example — failing input, both outputs, and the fix that worked. `rosetta
-   distill-export` writes them as chat JSONL and `rosetta distill-train`
-   fine-tunes the fast tier on Token Factory, so the repair loop can run on
-   Nano at a fraction of the reasoning tier's cost. Repairs that *regressed*
-   are excluded: imitating a bad fix makes the distilled model worse.
+   distill-export` writes them as chat JSONL and `rosetta distill-train` starts
+   a LoRA fine-tune on Token Factory. This is **cross-model** distillation:
+   Token Factory fine-tunes no Nemotron model, so Nemotron Ultra generates the
+   labels and a smaller fine-tunable student (Llama, Qwen, Gemma or gpt-oss)
+   learns them. Repairs that *regressed* are excluded — imitating a bad fix
+   makes the student worse.
 
 ## Quick start
 
@@ -149,7 +161,10 @@ out/
 
 - Python 3.10+
 - Docker (default sandbox — **no local GnuCOBOL needed**)
-- A Nebius Token Factory API key
+- A Nebius Token Factory API key — `NEBIUS_API_KEY`, the only credential the
+  pipeline needs. The Serverless AI Jobs sweep additionally needs the Nebius AI
+  Cloud CLI configured and a registry to push `Dockerfile.job` to, but the sweep
+  also runs locally via `rosetta bench --workers N`.
 
 To run without Docker, install GnuCOBOL (`brew install gnu-cobol`,
 `apt install gnucobol4`) and set `ROSETTA_SANDBOX=local`.
@@ -250,9 +265,11 @@ rosetta/
   distill.py         trace export, Token Factory fine-tune
   cli.py             command line
 jobs/
-  run_shard.py       Serverless Jobs shard entrypoint
+  run_shard.py       Serverless AI Jobs shard entrypoint
+  submit_sweep.sh    submits N shard jobs via the nebius CLI
   merge_shards.py    report assembly
-  nebius_job.yaml    sweep definition
+Dockerfile           the sandbox (GnuCOBOL + CPython, no app code)
+Dockerfile.job       sandbox + Rosetta source, for job replicas
 benchmarks/
   programs/          20-program COBOL corpus, one trap each
   smoke/             one stdin fixture per program

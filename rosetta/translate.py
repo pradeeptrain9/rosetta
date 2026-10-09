@@ -9,7 +9,7 @@ the differential harness will tell it exactly where it was wrong.
 from __future__ import annotations
 
 from .cobol import brief
-from .llm import LLMClient, extract_code
+from .llm import LLMClient
 from .models import CobolProgram, IOContract
 
 _SYSTEM = (
@@ -34,9 +34,20 @@ SEMANTIC_RULES = """Semantic rules you must follow:
    `DIVIDE` and `/` truncate the same way. Compute intermediates at full
    precision, then quantize once at the store into the target field.
 
-3. SIZE IS REAL. A PIC 9(5) field cannot hold 123456; the high-order digit is
-   silently lost unless ON SIZE ERROR is present. Model this by taking the
-   value modulo 10**digits and re-applying the sign.
+3. SIZE IS REAL, BUT ARITHMETIC AND INPUT TRUNCATE AT OPPOSITE ENDS.
+   a) ARITHMETIC store: a computed value too large for its target loses the
+      HIGH-ORDER digits, unless ON SIZE ERROR is present. `COMPUTE X = 123456`
+      into PIC 9(5) leaves 23456. Model it as value % 10**digits, sign re-applied.
+      With ON SIZE ERROR present and firing, the target is left COMPLETELY
+      UNCHANGED - it keeps its previous contents.
+   b) ACCEPT of an over-long LINE truncates on the RIGHT. The input is text, read
+      left to right into the field, so a 13-character line into PIC 9(8) keeps the
+      FIRST eight characters. Do NOT use modulo here: `1234567890123` becomes
+      12345678, not 67890123. Getting this backwards is the single most common
+      way a port disagrees with the original.
+   c) ACCEPT stops at the first character that cannot belong to the number. A
+      line like `123ABC` into PIC 9(8) yields 123, not zero and not an error.
+      An empty line, or one with no leading digits at all, yields zero.
 
 4. DISPLAY WRITES EXACT BYTES. One DISPLAY is one line on stdout.
    - PIC X(n): left justified, space padded to exactly n characters.
@@ -58,9 +69,14 @@ SEMANTIC_RULES = """Semantic rules you must follow:
    COBOL does when control reaches the end of one paragraph.
 
 7. INPUT. Each ACCEPT consumes one line from stdin. Read with
-   `sys.stdin.readline()`, strip the trailing newline only, and convert
-   according to the receiving field's picture. A short or non-numeric line that
-   COBOL would treat as zero must become zero, not an exception.
+   `sys.stdin.readline()`, strip the trailing newline only, then apply rule 3b
+   and 3c: take the first `digits` characters of the line, then the leading
+   numeric prefix of that, then zero if nothing is left. Never raise on
+   malformed input - COBOL does not. At EOF `readline()` returns "", which must
+   behave exactly as an empty line does.
+
+   A helper that does all of this in one place, used by every ACCEPT, is far
+   more likely to be right than the logic inlined at each call site.
 
 8. TERMINATION. STOP RUN exits 0. GOBACK returns. Do not print tracebacks on
    malformed input unless the COBOL program would also abort.
@@ -109,7 +125,7 @@ def translate(
         )
         or "none"
     )
-    text = client.chat(
+    return client.chat_code(
         model,
         [
             {"role": "system", "content": _SYSTEM},
@@ -128,4 +144,3 @@ def translate(
         ],
         max_tokens=16384,
     )
-    return extract_code(text)

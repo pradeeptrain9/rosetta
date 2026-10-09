@@ -1,0 +1,31 @@
+# Image for Serverless AI jobs: the sandbox plus the Rosetta source tree.
+#
+# The plain sandbox image deliberately carries no application code - it exists
+# only to compile and run programs. A job replica, though, has to execute
+# jobs/run_shard.py itself, so this layer adds the package and the corpus.
+#
+# Build the sandbox first (rosetta sandbox-build), then:
+#   docker build -t <registry>/rosetta-job:latest -f Dockerfile.job .
+#   docker push  <registry>/rosetta-job:latest
+ARG BASE_IMAGE=rosetta-sandbox:latest
+FROM ${BASE_IMAGE}
+
+USER root
+WORKDIR /app
+
+COPY pyproject.toml README.md ./
+COPY rosetta ./rosetta
+COPY jobs ./jobs
+COPY benchmarks ./benchmarks
+
+RUN pip install --no-cache-dir -e . \
+ && mkdir -p /output \
+ && chown -R 10001:10001 /app /output
+
+# GnuCOBOL is already in this image, so a job replica needs no nested Docker.
+ENV ROSETTA_SANDBOX=local \
+    ROSETTA_PROGRAMS_DIR=benchmarks/programs \
+    ROSETTA_OUTPUT_DIR=/output
+
+USER rosetta
+CMD ["python3", "jobs/run_shard.py"]

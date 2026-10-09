@@ -43,9 +43,15 @@ def main() -> int:
         return 2
 
     settings = Settings.from_env()
-    client = LLMClient(settings)
-    routing = resolve_models(served=client.served_models())
-    sandbox = Sandbox(settings)
+    try:
+        client = LLMClient(settings)
+        routing = resolve_models(served=client.served_models())
+        sandbox = Sandbox(settings)
+    except RuntimeError as exc:
+        # A job replica's only output is its log. A clean one-line cause beats a
+        # traceback when eight of them fail identically for a missing secret.
+        print(f"shard {index}: cannot start: {exc}", file=sys.stderr)
+        return 2
 
     sources = sorted(
         p for p in programs_dir.rglob("*") if p.suffix.lower() in {".cbl", ".cob", ".cobol"}

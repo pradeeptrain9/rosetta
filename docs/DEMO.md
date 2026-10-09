@@ -63,11 +63,15 @@ Hold on the equivalence table and the token-usage table.
 > their full vector suite, and the token table shows where the money went:
 > Ultra on translation and repair, Nano on everything high-volume."
 
-Then show `jobs/nebius_job.yaml`:
+Then show `jobs/submit_sweep.sh`:
 
 > "Verification is the expensive stage — every program runs its whole suite
-> twice per repair iteration. That fans out across Nebius Serverless Jobs,
-> stride-partitioned, one replica per shard."
+> twice per repair iteration. That fans out across Nebius Serverless AI Jobs.
+> Jobs have no replica flag, so a sweep is N independent submissions, each
+> stride-partitioned onto its own slice of the corpus. The replicas are plain
+> CPU workers; all the GPU work stays in Token Factory."
+
+Put the single-job vs N-job wall clock on screen here.
 
 ## 2:15–2:45 — the distillation result
 
@@ -76,9 +80,10 @@ rosetta distill-export
 ```
 
 > "Every accepted repair is a labelled example: the failing input, both
-> outputs, and the fix that worked. Fine-tune Nano on those in Token Factory
-> and the repair loop runs on the cheap tier. Repairs that regressed are
-> excluded — imitating a bad fix makes the model worse."
+> outputs, and the fix that worked. Token Factory fine-tunes no Nemotron, so
+> Ultra generates the labels and a small student learns them — cross-model
+> distillation. Repairs that regressed are excluded; imitating a bad fix makes
+> the student worse."
 
 Put the before/after cost and pass-rate numbers on screen as text.
 

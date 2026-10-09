@@ -43,6 +43,7 @@ def models(resolve: bool = typer.Option(False, "--resolve", help="Re-discover se
     table.add_row("reason", "translation + repair", routing.reason)
     table.add_row("fast", "I/O contract + test vectors", routing.fast)
     table.add_row("mid", "distillation comparison", routing.mid)
+    table.add_row("student", "distillation fine-tune target", routing.student)
     console.print(table)
 
     nemotron = [m for m in served if "nemotron" in m.lower()]
@@ -164,10 +165,22 @@ def distill_train(
     """Upload the trace set and start a Token Factory fine-tune of the fast tier."""
     settings, client = _setup()
     routing = resolve_models(served=client.served_models())
+    if not dataset.exists():
+        console.print(f"[red]{dataset} not found. Run `rosetta distill-export` first.[/red]")
+        raise typer.Exit(1)
+
     file_id = distill_mod.upload_dataset(settings, dataset)
     console.print(f"Uploaded dataset: {file_id}")
-    job_id = distill_mod.start_finetune(settings, file_id, routing.fast, epochs=epochs)
-    console.print(f"Fine-tune job: [bold]{job_id}[/bold] (base {routing.fast})")
+    # The student, not routing.fast: no Nemotron model is fine-tunable.
+    job_id = distill_mod.start_finetune(
+        settings, file_id, routing.student, epochs=epochs
+    )
+    console.print(f"Fine-tune job: [bold]{job_id}[/bold] (base {routing.student})")
+    console.print(
+        "[dim]Nemotron generated the labels; the student learns them. "
+        "A succeeded job yields checkpoints that may still need deploying "
+        "before the adapter is callable.[/dim]"
+    )
     console.print(f"Poll with: [dim]rosetta distill-status {job_id}[/dim]")
 
 

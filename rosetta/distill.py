@@ -4,7 +4,11 @@ The economics of the pipeline are set by the repair loop: it runs on the
 reasoning tier because diagnosing a scale bug needs reasoning. But the repairs
 are highly repetitive across programs - the same dozen COBOL semantics get
 mistranslated again and again. Every accepted repair is therefore a labelled
-example, and the fast tier can be taught to do most of them.
+example, and a much smaller model can be taught to do most of them.
+
+This is CROSS-MODEL distillation, not same-family: Token Factory fine-tunes no
+Nemotron model, so Nemotron Ultra generates the labels and a fine-tunable
+student (Llama, Qwen, Gemma or gpt-oss) learns them.
 
 `export` writes the JSONL. `upload` and `train` drive Token Factory's
 fine-tuning API. `train` is intentionally thin: it submits the job and prints
@@ -92,24 +96,57 @@ def start_finetune(
     base_model: str,
     suffix: str = "rosetta-repair",
     epochs: int = 3,
+    lora_r: int = 16,
+    lora_alpha: int = 32,
 ) -> str:
+    """Submit a LoRA fine-tune of the student on the repair traces.
+
+    base_model must be one Token Factory can fine-tune. Passing a Nemotron here
+    is rejected by the API - see config.FINE_TUNABLE_STUDENTS.
+    """
     client = OpenAI(api_key=settings.api_key, base_url=settings.base_url)
     job = client.fine_tuning.jobs.create(
         training_file=file_id,
         model=base_model,
         suffix=suffix,
-        hyperparameters={"n_epochs": epochs},
+        hyperparameters={
+            "n_epochs": epochs,
+            # Adapter-only training: the repair behaviour is a narrow skill laid
+            # over a general model, and a full fine-tune would cost far more for
+            # no benefit on a few hundred examples.
+            "lora": True,
+            "lora_r": lora_r,
+            "lora_alpha": lora_alpha,
+        },
+        seed=42,
     )
     return job.id
 
 
 def finetune_status(settings: Settings, job_id: str) -> dict:
+    """Report a fine-tune job.
+
+    A succeeded job yields downloadable CHECKPOINTS; it does not necessarily
+    become a servable model id. `fine_tuned_model` is therefore often null even
+    on success, and `servable` says plainly whether the adapter can be called
+    yet or still needs deploying.
+    """
     client = OpenAI(api_key=settings.api_key, base_url=settings.base_url)
     job = client.fine_tuning.jobs.retrieve(job_id)
+    tuned = getattr(job, "fine_tuned_model", None)
+    status = getattr(job, "status", "unknown")
     return {
         "id": job.id,
-        "status": job.status,
-        "model": job.model,
-        "fine_tuned_model": job.fine_tuned_model,
+        "status": status,
+        "base_model": getattr(job, "model", None),
+        "fine_tuned_model": tuned,
         "trained_tokens": getattr(job, "trained_tokens", None),
+        "servable": bool(tuned),
+        "next_step": (
+            f"call it as model={tuned!r}"
+            if tuned
+            else "download the checkpoints and deploy the adapter before it can be called"
+            if status == "succeeded"
+            else f"wait: job is {status}"
+        ),
     }

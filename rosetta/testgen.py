@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import random
 
+from typing import Callable
+
 from .llm import LLMClient
 from .models import IOContract, TestVector
 
@@ -135,6 +137,7 @@ def llm_vectors(
     source: str,
     contract: IOContract,
     n: int = 20,
+    log: Callable[[str], None] = lambda _m: None,
 ) -> list[TestVector]:
     fields_desc = (
         "\n".join(
@@ -162,10 +165,17 @@ def llm_vectors(
                 },
             ],
             temperature=0.7,  # diversity matters more than determinism here
-            max_tokens=4096,
+            # Headroom matters here: 20 vectors with notes has been measured at
+            # ~3.9k completion tokens, so a 4k cap sat right on the edge and
+            # intermittently returned nothing at all.
+            max_tokens=8192,
         )
-    except (ValueError, RuntimeError):
-        return []  # boundary vectors alone are still a valid run
+    except (ValueError, RuntimeError) as exc:
+        # Boundary vectors alone are still a valid run, but it is a much weaker
+        # claim, so say so rather than quietly proving equivalence over a
+        # fraction of the intended suite.
+        log(f"[warn] generated vectors unavailable, boundary probes only: {exc}")
+        return []
 
     out: list[TestVector] = []
     if not isinstance(data, list):
@@ -186,11 +196,16 @@ def build_suite(
     source: str,
     contract: IOContract,
     target: int = 40,
+    log: Callable[[str], None] = lambda _m: None,
 ) -> list[TestVector]:
     """Boundary probes first, topped up with model-generated vectors."""
     boundary = boundary_vectors(contract, cap=max(target // 2, 10))
     want = max(target - len(boundary), 0)
-    extra = llm_vectors(client, fast_model, source, contract, n=want) if want else []
+    extra = (
+        llm_vectors(client, fast_model, source, contract, n=want, log=log)
+        if want
+        else []
+    )
 
     merged: dict[str, TestVector] = {v.stdin: v for v in boundary}
     for v in extra:
