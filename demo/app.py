@@ -77,7 +77,9 @@ td.n,th.n{text-align:right;font-variant-numeric:tabular-nums}
 .ok{color:var(--ok);font-weight:600}
 .bad{color:var(--bad);font-weight:600}
 pre{background:var(--code);border:1px solid var(--line);border-radius:10px;
-padding:14px;overflow-x:auto;font:12.5px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;margin:0}
+padding:14px;overflow:auto;font:12.5px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;
+margin:0;max-height:460px}
+pre.diff{max-height:none}
 .cols{display:grid;grid-template-columns:1fr 1fr;gap:16px}
 @media(max-width:820px){.cols{grid-template-columns:1fr}}
 .note{background:var(--card);border:1px solid var(--line);border-left:3px solid var(--accent);
@@ -173,26 +175,37 @@ def program(pid: str) -> HTMLResponse:
         f"<p class=sub>{mark} &mdash; {d['vectors_passed']}/{d['vectors_total']} "
         f"vectors matched byte for byte, after {d['repair_iterations']} repair "
         f"iteration(s).</p>",
-        "<div class=cols>",
-        f"<div><h2>COBOL original</h2><pre>{html.escape(d.get('cobol',''))}</pre></div>",
-        f"<div><h2>Migrated Python</h2><pre>{html.escape(d.get('python',''))}</pre></div>",
-        "</div>",
     ]
 
+    # Evidence before source. The diffs are what make the claim checkable, and
+    # two full file listings push them a long way below the fold.
     if fails:
         body.append(f"<h2>Failing vectors ({len(fails)})</h2>")
+        body.append(
+            "<p class=sub>Each block is the original's output against the port's, "
+            "for one generated input. Minus is COBOL, plus is Python.</p>"
+        )
         for f in fails[:12]:
             body.append(
                 f"<p class=sub><code>{html.escape(f.get('kind',''))}</code> on input "
                 f"{html.escape(repr(f.get('stdin','')))}</p>"
-                f"<pre>{html.escape(f.get('detail',''))}</pre>"
+                f"<pre class=diff>{html.escape(f.get('detail',''))}</pre>"
             )
+        if len(fails) > 12:
+            body.append(f"<p class=sub>{len(fails) - 12} further failing vector(s) not shown.</p>")
     else:
         body.append(
             "<div class=note>No failing vectors. Every generated input - including "
             "boundary and overflow cases derived from the program's own PIC clauses "
             "- produced identical output from both programs.</div>"
         )
+
+    body += [
+        "<div class=cols>",
+        f"<div><h2>COBOL original</h2><pre>{html.escape(d.get('cobol',''))}</pre></div>",
+        f"<div><h2>Migrated Python</h2><pre>{html.escape(d.get('python',''))}</pre></div>",
+        "</div>",
+    ]
     return _page(f"Rosetta - {d['program_id']}", "".join(body))
 
 
